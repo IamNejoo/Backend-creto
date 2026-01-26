@@ -1,0 +1,618 @@
+// schema.prisma — E-commerce + Dropshipping (NestJS + Prisma + PostgreSQL)
+// Pega esto en backend/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+  
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/**
+ * ==== Enums ====
+ */
+enum Role {
+  admin
+  user
+}
+
+enum ProductType {
+  physical
+  digital
+}
+
+enum OrderStatus {
+  draft
+  pending
+  paid
+  failed
+  fulfilled
+  cancelled
+  refunded
+}
+
+enum TicketStatus {
+  available
+  reserved
+  paid
+  expired
+}
+
+enum OrderAddressType {
+  shipping
+  billing
+}
+
+enum InventorySourceType {
+  supplier
+  warehouse
+}
+
+enum DropStatus {
+  created
+  accepted
+  rejected
+  shipped
+  cancelled
+}
+
+enum FulfillStatus {
+  pending
+  picking
+  shipped
+  delivered
+  cancelled
+}
+
+enum FulfillSource {
+  seller
+  supplier
+}
+
+enum ShipStatus {
+  label_created
+  in_transit
+  delivered
+  exception
+}
+
+enum PaymentProvider {
+  mercadopago
+  flow
+}
+
+enum PaymentStatus {
+  init
+  approved
+  rejected
+  refunded
+}
+
+enum DiscountType {
+  amount
+  percent
+}
+
+enum ActorType {
+  user
+  system
+  supplier
+}
+
+enum RefundStatus {
+  requested
+  approved
+  processed
+  rejected
+}
+
+/** NUEVO: modo del sorteo */
+enum RaffleMode {
+  tickets    // compra/reserva de tickets con números
+  purchases  // entradas por compras en la tienda
+}
+
+/**
+ * ==== Models ====
+ */
+model User {
+  id    String  @id @default(cuid())
+  email String  @unique
+  hash  String?
+  googleId  String?
+  role  Role    @default(user)
+  phone String?
+  name      String? // nombre visible
+  lastname  String?
+  avatarUrl String? // url foto de perfil
+  createdAt           DateTime             @default(now())
+  // relations
+  addresses           Address[]
+  orders              Order[]
+  tickets             RaffleTicket[]
+  downloadTokens      DownloadToken[]
+  passwordResetTokens PasswordResetToken[]
+  raffleEntries       RaffleEntry[] // <- AGREGADO
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  tokenHash String    @unique // sha256 del token enviado por correo
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Address {
+  id                String   @id @default(cuid())
+  user              User     @relation(fields: [userId], references: [id])
+  userId            String
+  name              String?
+  line1             String
+  line2             String?
+  city              String
+  region            String
+  country           String   @default("CL")
+  zip               String?
+  phone             String?
+  isDefaultShipping Boolean  @default(false)
+  isDefaultBilling  Boolean  @default(false)
+  createdAt         DateTime @default(now())
+}
+
+model OrderAddress {
+  id      String           @id @default(cuid())
+  order   Order            @relation(fields: [orderId], references: [id])
+  orderId String
+  type    OrderAddressType
+  name    String
+  line1   String
+  line2   String?
+  city    String
+  region  String
+  country String
+  zip     String?
+  phone   String?
+
+  @@unique([orderId, type])
+}
+
+model Category {
+  id       String            @id @default(cuid())
+  name     String
+  slug     String            @unique
+  parentId String?
+  parent   Category?         @relation("CategoryToCategory", fields: [parentId], references: [id])
+  children Category[]        @relation("CategoryToCategory")
+  products ProductCategory[]
+}
+
+model ProductCategory {
+  product    Product  @relation(fields: [productId], references: [id])
+  productId  String
+  category   Category @relation(fields: [categoryId], references: [id])
+  categoryId String
+
+  @@id([productId, categoryId])
+}
+
+model Product {
+  id            String            @id @default(cuid())
+  title         String
+  slug          String            @unique
+  description   String
+  price_clp     Int
+  type          ProductType
+  active        Boolean           @default(true)
+  createdAt     DateTime          @default(now())
+  // relations
+  images        ProductImage[]
+  variants      Variant[]
+  items         OrderItem[]
+  digitalAssets DigitalAsset[]
+  categories    ProductCategory[]
+}
+
+model ProductImage {
+  id         String  @id @default(cuid())
+  product    Product @relation(fields: [productId], references: [id])
+  productId  String
+  s3_key     String
+  is_primary Boolean @default(false)
+  position   Int     @default(0)
+
+  @@index([productId])
+}
+
+model Variant {
+  id               String            @id @default(cuid())
+  product          Product           @relation(fields: [productId], references: [id])
+  productId        String
+  sku              String            @unique
+  size             String?
+  color            String?
+  extra_price      Int               @default(0)
+  weight_g         Int?
+  dim_l            Int?
+  dim_w            Int?
+  dim_h            Int?
+  active           Boolean           @default(true)
+  createdAt        DateTime          @default(now())
+  // relations
+  items            OrderItem[]
+  levels           InventoryLevel[]
+  supplierProducts SupplierProduct[]
+  dropShipItems    DropShipItem[]
+
+  @@index([productId])
+}
+
+model InventorySource {
+  id     String              @id @default(cuid())
+  name   String
+  type   InventorySourceType
+  active Boolean             @default(true)
+  levels InventoryLevel[]
+}
+
+model InventoryLevel {
+  id        String          @id @default(cuid())
+  variant   Variant         @relation(fields: [variantId], references: [id])
+  variantId String
+  source    InventorySource @relation(fields: [sourceId], references: [id])
+  sourceId  String
+  stock     Int
+  reserved  Int             @default(0)
+
+  @@unique([variantId, sourceId])
+  @@index([variantId])
+}
+
+model DigitalAsset {
+  id        String          @id @default(cuid())
+  product   Product         @relation(fields: [productId], references: [id])
+  productId String
+  s3_key    String
+  bytes     Int
+  checksum  String
+  version   Int             @default(1)
+  createdAt DateTime        @default(now())
+  tokens    DownloadToken[]
+}
+
+model DownloadToken {
+  id             String       @id @default(cuid())
+  asset          DigitalAsset @relation(fields: [digitalAssetId], references: [id])
+  digitalAssetId String
+  user           User?        @relation(fields: [userId], references: [id])
+  userId         String?
+  orderItem      OrderItem?   @relation(fields: [orderItemId], references: [id])
+  orderItemId    String?
+  token          String       @unique
+  expiresAt      DateTime
+  maxUses        Int          @default(3)
+  uses           Int          @default(0)
+  createdAt      DateTime     @default(now())
+}
+
+model Coupon {
+  id             String          @id @default(cuid())
+  code           String          @unique
+  type           DiscountType
+  value          Int // CLP si amount; % si percent (0-100)
+  max_uses       Int
+  used           Int             @default(0)
+  starts_at      DateTime?
+  ends_at        DateTime?
+  min_subtotal   Int?
+  createdAt      DateTime        @default(now())
+  orderDiscounts OrderDiscount[]
+}
+
+model Order {
+  id               String            @id @default(cuid())
+  user             User              @relation(fields: [userId], references: [id])
+  userId           String
+  number           String            @unique
+  status           OrderStatus       @default(pending)
+  subtotal_clp     Int
+  discount_clp     Int               @default(0)
+  tax_clp          Int               @default(0)
+  shipping_clp     Int               @default(0)
+  total_clp        Int
+  currency         String            @default("CLP")
+  createdAt        DateTime          @default(now())
+  // relations
+  items            OrderItem[]
+  payments         Payment[]
+  fulfillments     Fulfillment[]
+  discounts        OrderDiscount[]
+  taxLines         TaxLine[]
+  refunds          Refund[]
+  addresses        OrderAddress[]
+  dropshipRequests DropShipRequest[]
+  raffleTickets    RaffleTicket[]
+  webhookEvents    WebhookEvent[]
+  raffleEntries    RaffleEntry[] // <- AGREGADO
+
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id               String            @id @default(cuid())
+  order            Order             @relation(fields: [orderId], references: [id])
+  orderId          String
+  product          Product           @relation(fields: [productId], references: [id])
+  productId        String
+  variant          Variant?          @relation(fields: [variantId], references: [id])
+  variantId        String?
+  title_snap       String
+  sku_snap         String?
+  qty              Int
+  unit_price_clp   Int
+  total_clp        Int
+  downloadTokens   DownloadToken[]
+  dropShipItems    DropShipItem[]
+  fulfillmentItems FulfillmentItem[]
+
+  @@index([orderId])
+}
+
+model Payment {
+  id               String          @id @default(cuid())
+  order            Order           @relation(fields: [orderId], references: [id])
+  orderId          String
+  provider         PaymentProvider 
+  mp_preference_id String?
+  mp_payment_id    String?         @unique
+  status           PaymentStatus   @default(init)
+  amount_clp       Int
+  createdAt        DateTime        @default(now())
+  refunds          Refund[]
+
+  flow_token     String? @unique @map("flow_token")
+  flow_order_id  String? @map("flow_order_id")
+}
+
+model TaxLine {
+  id         String  @id @default(cuid())
+  order      Order   @relation(fields: [orderId], references: [id])
+  orderId    String
+  name       String
+  rate       Decimal @db.Decimal(5, 4)
+  amount_clp Int
+}
+
+model OrderDiscount {
+  id          String  @id @default(cuid())
+  order       Order   @relation(fields: [orderId], references: [id])
+  orderId     String
+  coupon      Coupon? @relation(fields: [couponId], references: [id])
+  couponId    String?
+  description String
+  amount_clp  Int
+}
+
+model Refund {
+  id         String       @id @default(cuid())
+  order      Order        @relation(fields: [orderId], references: [id])
+  orderId    String
+  payment    Payment?     @relation(fields: [paymentId], references: [id])
+  paymentId  String?
+  amount_clp Int
+  reason     String?
+  status     RefundStatus @default(requested)
+  createdAt  DateTime     @default(now())
+}
+
+model Raffle {
+  id               String              @id @default(cuid())
+  name             String
+  ticket_price_clp Int                 @default(3000)
+  total_tickets    Int
+  reserved_tickets Int                 @default(0) // reservas pendientes de pago
+  paid_tickets     Int                 @default(0) // tickets confirmados/pagados
+  starts_at        DateTime
+  ends_at          DateTime
+  createdAt        DateTime            @default(now())
+
+  // NUEVO: destacado en Home
+  is_featured      Boolean             @default(false)
+  // NUEVO: modo de participación
+  mode             RaffleMode          @default(tickets)
+  // NUEVO: reglas simples para modo purchases (opcionales)
+  amount_per_entry_clp Int?            // 1 entrada por cada N CLP
+  entries_per_item     Int?            // 1 entrada por cada ítem
+
+  tickets          RaffleTicket[]
+  images           RaffleImage[]
+  pricingTiers     RafflePricingTier[]
+  entries          RaffleEntry[]
+
+  @@index([starts_at])
+  @@index([ends_at])
+  @@index([is_featured])
+  @@index([mode])
+}
+
+model RaffleTicket {
+  id                     String       @id @default(cuid())
+  raffle                 Raffle       @relation(fields: [raffleId], references: [id])
+  raffleId               String
+  user                   User?        @relation(fields: [userId], references: [id])
+  userId                 String?
+  order                  Order?       @relation(fields: [orderId], references: [id])
+  orderId                String?
+  number                 Int
+  status                 TicketStatus @default(available)
+  reservation_expires_at DateTime?
+
+  @@unique([raffleId, number])
+  @@index([raffleId, status])
+  @@index([reservation_expires_at])
+}
+
+/** MOD: tiers con extras opcionales para promos */
+model RafflePricingTier {
+  id        String  @id @default(cuid())
+  raffle    Raffle  @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  raffleId  String
+  quantity  Int     // ej. 3
+  price_clp Int     // ej. 10000 (precio total por el pack)
+
+  // Opcionales para gestión/UX
+  active    Boolean  @default(true)
+  sort      Int      @default(0)
+  starts_at DateTime?
+  ends_at   DateTime?
+  label     String?
+
+  @@unique([raffleId, quantity])
+  @@index([raffleId])
+  @@index([active])
+  @@index([starts_at])
+  @@index([ends_at])
+}
+
+model RaffleImage {
+  id         String   @id @default(cuid())
+  raffle     Raffle   @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  raffleId   String
+  s3_key     String // Clave del archivo en S3 o ruta pública
+  is_primary Boolean  @default(false)
+  position   Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([raffleId])
+  @@index([is_primary])
+  @@index([position])
+}
+
+model RaffleEntry {
+  id        String   @id @default(cuid())
+  raffle    Raffle   @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  raffleId  String
+  user      User?    @relation(fields: [userId], references: [id])
+  userId    String?
+  order     Order?   @relation(fields: [orderId], references: [id])
+  orderId   String?
+  entries   Int      @default(1)          // cuántas entradas aporta el registro
+  source    String   @default("order")    // "order" | "manual" | "system"
+  createdAt DateTime @default(now())
+
+  @@index([raffleId])
+  @@index([userId])
+  @@index([orderId])
+}
+
+model Supplier {
+  id             String            @id @default(cuid())
+  name           String
+  email          String?
+  phone          String?
+  api_base       String?
+  active         Boolean           @default(true)
+  lead_time_days Int?
+  products       SupplierProduct[]
+  requests       DropShipRequest[]
+}
+
+model SupplierProduct {
+  id             String   @id @default(cuid())
+  supplier       Supplier @relation(fields: [supplierId], references: [id])
+  supplierId     String
+  variant        Variant  @relation(fields: [variantId], references: [id])
+  variantId      String
+  supplier_sku   String
+  cost_clp       Int
+  min_qty        Int      @default(1)
+  lead_time_days Int?
+
+  @@unique([supplierId, supplier_sku])
+}
+
+model DropShipRequest {
+  id         String         @id @default(cuid())
+  order      Order          @relation(fields: [orderId], references: [id])
+  orderId    String
+  supplier   Supplier       @relation(fields: [supplierId], references: [id])
+  supplierId String
+  status     DropStatus     @default(created)
+  notes      String?
+  createdAt  DateTime       @default(now())
+  items      DropShipItem[]
+}
+
+model DropShipItem {
+  id          String          @id @default(cuid())
+  request     DropShipRequest @relation(fields: [requestId], references: [id])
+  requestId   String
+  orderItem   OrderItem       @relation(fields: [orderItemId], references: [id])
+  orderItemId String
+  variant     Variant         @relation(fields: [variantId], references: [id])
+  variantId   String
+  qty         Int
+}
+
+model Fulfillment {
+  id        String            @id @default(cuid())
+  order     Order             @relation(fields: [orderId], references: [id])
+  orderId   String
+  status    FulfillStatus     @default(pending)
+  source    FulfillSource
+  createdAt DateTime          @default(now())
+  items     FulfillmentItem[]
+  shipment  Shipment?
+}
+
+model FulfillmentItem {
+  id            String      @id @default(cuid())
+  fulfillment   Fulfillment @relation(fields: [fulfillmentId], references: [id])
+  fulfillmentId String
+  orderItem     OrderItem   @relation(fields: [orderItemId], references: [id])
+  orderItemId   String
+  qty           Int
+}
+
+model Shipment {
+  id             String      @id @default(cuid())
+  fulfillment    Fulfillment @relation(fields: [fulfillmentId], references: [id])
+  fulfillmentId  String      @unique
+  carrier        String
+  service        String?
+  trackingNumber String?
+  labelS3Key     String?
+  shippedAt      DateTime?
+  deliveredAt    DateTime?
+  status         ShipStatus  @default(label_created)
+}
+
+model WebhookEvent {
+  id         String   @id @default(cuid())
+  order      Order?   @relation(fields: [orderId], references: [id])
+  orderId    String?
+  provider   String
+  event_type String?
+  raw_json   Json
+  processed  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+}
+
+model AuditLog {
+  id         String    @id @default(cuid())
+  actor_type ActorType
+  actor_id   String?
+  action     String
+  entity     String
+  entity_id  String
+  meta       Json?
+  createdAt  DateTime  @default(now())
+}

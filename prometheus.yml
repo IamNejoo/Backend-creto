@@ -1,0 +1,23 @@
+# prometheus.yml
+global:
+  scrape_interval: 15s # Frecuencia con la que se recolectan datos
+
+scrape_configs:
+  # Se monitorea a sí mismo
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # ¡IMPORTANTE! Monitorea tu backend
+  - job_name: 'backend-nestjs'
+    metrics_path: /api/v1/metrics
+    static_configs:
+    
+      # Usa el nombre del contenedor y el puerto INTERNO
+      
+      - targets: ['backend:3000'] 
+
+  # Monitorea la salud de los contenedores (CPU, Memoria)
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']

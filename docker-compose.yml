@@ -1,0 +1,128 @@
+version: '3.9'
+
+services:
+  # --- 1. Base de Datos (Sin cambios) ---
+  db:
+    image: postgres:15
+    container_name: db
+    restart: always
+    environment:
+      POSTGRES_USER: tu_usuario
+      POSTGRES_PASSWORD: hola
+      POSTGRES_DB: mi_tienda_dev
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+  # --- 2. Tu Backend (Sin cambios) ---
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tienda-backend:latest
+    container_name: backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/usr/src/app
+      - /usr/src/app/node_modules
+    environment:
+      DATABASE_URL: ${DATABASE_URL} 
+      PORT: 3000
+      JWT_SECRET: ${JWT_SECRET}
+      NODE_ENV: production
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      API_BASE_URL: ${API_BASE_URL}
+      BACKEND_URL: ${BACKEND_URL}
+      MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN}
+      FLOW_API_KEY: ${FLOW_API_KEY}
+      FLOW_SECRET_KEY: ${FLOW_SECRET_KEY}
+      FLOW_API_URL: ${FLOW_API_URL}
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      EMAIL_FROM: ${EMAIL_FROM}
+      MP_USE_BACK_URLS: ${MP_USE_BACK_URLS}
+      MP_WEBHOOK_SECRET: ${MP_WEBHOOK_SECRET}
+      AWS_REGION: ${AWS_REGION}
+      S3_BUCKET: ${S3_BUCKET}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      PUBLIC_BASE_S3: ${PUBLIC_BASE_S3}
+    command: sh -c "npx prisma migrate deploy && npm run start:prod"
+    networks:
+      - app-network
+    depends_on:
+      - db
+
+  # --- 3. Tu Nginx (Sin cambios) ---
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./infra/nginx/default.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+  # --- 4. Prometheus (¡NUEVO!) ---
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:v2.40.1
+    restart: always
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    networks:
+      - app-network
+    depends_on:
+      - backend
+      - cadvisor
+
+  # --- 5. Grafana (¡NUEVO!) ---
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:9.2.3
+    restart: always
+    ports:
+      - '4000:3000' 
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - app-network
+    depends_on:
+      - prometheus
+
+  # --- 6. cAdvisor (¡NUEVO!) ---
+  cadvisor:
+    container_name: cadvisor
+    image: gcr.io/cadvisor/cadvisor:v0.45.0
+    restart: always
+    ports:
+      - '8080:8080'
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - app-network
+
+# --- Red y Volúmenes (Actualizado) ---
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  grafana-data: # ¡NUEVO!
