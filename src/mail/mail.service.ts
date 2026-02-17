@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class MailService {
-  private resend: Resend;
+  private resend: Resend | null = null;
   private readonly logger = new Logger(MailService.name);
   private fromEmail: string;
   private frontendUrl: string;
@@ -17,27 +17,41 @@ export class MailService {
   private bucket: string;
   private publicBaseS3: string;
 
+  private mailEnabled = false;
   constructor(private config: ConfigService) {
-    // 1. Configuración Resend
-    this.resend = new Resend(this.config.get('RESEND_API_KEY'));
-    this.fromEmail = this.config.get('EMAIL_FROM') || 'onboarding@resend.dev';
-    this.frontendUrl = this.config.get('PUBLIC_BASE_URL') || 'http://localhost:5173';
+    // 1) Configuración Resend
+    const resendKey = this.config.get<string>('RESEND_API_KEY')?.trim();
 
-    // 2. Configuración S3
-    const region = this.config.get('AWS_REGION');
-    this.bucket = this.config.get('S3_BUCKET') || '';
-    this.publicBaseS3 = (this.config.get('PUBLIC_BASE_S3') || '').replace(/\/+$/, '');
+    this.fromEmail = this.config.get<string>('EMAIL_FROM') || 'onboarding@resend.dev';
+    this.frontendUrl = this.config.get<string>('PUBLIC_BASE_URL') || 'http://localhost:5173';
+
+    if (resendKey) {
+      this.resend = new Resend(resendKey);
+      this.mailEnabled = true;
+    } else {
+      // IMPORTANTE: no caemos, solo dejamos mail apagado
+      console.warn('[MailService] RESEND_API_KEY no configurada. Envío de correos DESHABILITADO.');
+      this.resend = null;
+      this.mailEnabled = false;
+    }
+
+    // 2) Configuración S3
+    const region = this.config.get<string>('AWS_REGION');
+    this.bucket = this.config.get<string>('S3_BUCKET') || '';
+    this.publicBaseS3 = (this.config.get<string>('PUBLIC_BASE_S3') || '').replace(/\/+$/, '');
 
     this.s3 = new S3Client({
       region,
-      credentials: this.config.get('AWS_ACCESS_KEY_ID') && this.config.get('AWS_SECRET_ACCESS_KEY')
-        ? {
-          accessKeyId: this.config.get('AWS_ACCESS_KEY_ID')!,
-          secretAccessKey: this.config.get('AWS_SECRET_ACCESS_KEY')!,
-        }
-        : undefined,
+      credentials:
+        this.config.get<string>('AWS_ACCESS_KEY_ID') && this.config.get<string>('AWS_SECRET_ACCESS_KEY')
+          ? {
+            accessKeyId: this.config.get<string>('AWS_ACCESS_KEY_ID')!,
+            secretAccessKey: this.config.get<string>('AWS_SECRET_ACCESS_KEY')!,
+          }
+          : undefined,
     });
   }
+
 
   // --- 1. CORREO DE RECUPERACIÓN DE CONTRASEÑA ---
   async sendPasswordReset(email: string, token: string) {
@@ -201,6 +215,10 @@ export class MailService {
 
       try {
         // Enviamos el lote completo (1 request = 100 correos)
+        if (!this.mailEnabled || !this.resend) {
+          console.warn('[MailService] Batch email skipped: RESEND_API_KEY missing');
+          return { skipped: true };
+        }
         const { data, error } = await this.resend.batch.send(batchPayload);
 
         if (error) {
@@ -268,6 +286,10 @@ export class MailService {
   // --- MÉTODO PRIVADO GENÉRICO (Individual) ---
   private async sendEmail(to: string, subject: string, html: string) {
     try {
+      if (!this.mailEnabled || !this.resend) {
+        console.warn('[MailService] Batch email skipped: RESEND_API_KEY missing');
+        return { skipped: true };
+      }
       const response = await this.resend.emails.send({
         from: this.fromEmail,
         to: [to],

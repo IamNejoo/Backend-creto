@@ -9,9 +9,9 @@ services:
     environment:
       POSTGRES_USER: tu_usuario
       POSTGRES_PASSWORD: hola
-      POSTGRES_DB: mi_tienda_dev
+      POSTGRES_DB: tienda_creto
     ports:
-      - '5432:5432'
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
