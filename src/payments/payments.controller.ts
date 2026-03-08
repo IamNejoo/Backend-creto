@@ -24,7 +24,7 @@ export class PaymentsController {
         return this.payments.createFlowRaffleCheckout(userId, raffleId, dto.quantity, dto.couponCode);
     }
 
-    // --- CHECKOUT MERCADO PAGO (Genérico) ---
+    // --- CHECKOUT MERCADO PAGO ---
     @UseGuards(JwtAuthGuard)
     @Post('raffles/:id/checkout')
     async createMpCheckout(
@@ -32,11 +32,10 @@ export class PaymentsController {
         @GetUser('id') userId: string,
         @Body() dto: CreateCheckoutDto,
     ) {
-        // Redirige al servicio de Mercado Pago
         return this.payments.createMpRaffleCheckout(userId, raffleId, dto.quantity, dto.couponCode);
     }
 
-    // --- WEBHOOKS (Ambos responden 200 OK siempre) ---
+    // --- WEBHOOKS ---
 
     @Post('flow/webhook')
     @HttpCode(HttpStatus.OK)
@@ -47,16 +46,17 @@ export class PaymentsController {
     @Post('mercadopago/webhook')
     @HttpCode(HttpStatus.OK)
     async mpWebhook(@Query() query: any, @Body() body: any) {
-        // El middleware ya logueó todo, aquí solo procesamos
         return this.payments.handleMpWebhook(query, body);
     }
 
-    // --- REDIRECCIONES MERCADO PAGO ---
+    // --- VERIFICAR ESTADO PAGO MP (llamado desde frontend) ---
     @Get('mercadopago/verify')
     async verifyMpPayment(@Query() query: any) {
         const externalRef = query.external_reference;
         const paymentIdMp = query.payment_id;
-        if (!externalRef) return { status: 'failed', orderId: null };
+        if (!externalRef) {
+            return { status: 'failed', orderId: null };
+        }
         return this.payments.verifyMpPaymentStatus(externalRef, paymentIdMp);
     }
 
