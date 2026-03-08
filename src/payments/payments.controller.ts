@@ -52,19 +52,12 @@ export class PaymentsController {
     }
 
     // --- REDIRECCIONES MERCADO PAGO ---
-    @Get('mercadopago/return')
-    async mpReturn(@Query() query: any, @Res() res: Response) {
-        const publicBase = process.env.PUBLIC_BASE_URL || 'http://localhost:5173';
-        const status = query.status;
-        const paymentId = query.payment_id;
-
-        if (status === 'success' || status === 'approved') {
-            res.redirect(`${publicBase}/checkout/success?payment_id=${paymentId}`);
-        } else if (status === 'failure') {
-            res.redirect(`${publicBase}/checkout/failure`);
-        } else {
-            res.redirect(`${publicBase}/checkout/pending`);
-        }
+    @Get('mercadopago/verify')
+    async verifyMpPayment(@Query() query: any) {
+        const externalRef = query.external_reference;
+        const paymentIdMp = query.payment_id;
+        if (!externalRef) return { status: 'failed', orderId: null };
+        return this.payments.verifyMpPaymentStatus(externalRef, paymentIdMp);
     }
 
     // --- REDIRECCIONES FLOW ---

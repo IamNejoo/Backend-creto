@@ -42,6 +42,7 @@ export class PaymentsService {
 
     // --- URLs ---
     private readonly apiBase: string;
+    private readonly frontendBase: string;
 
     constructor(
         private prisma: PrismaService,
@@ -67,6 +68,7 @@ export class PaymentsService {
         // URLs Base
         const apiBase = process.env.API_BASE_URL || 'http://localhost:3000/api/v1';
         this.apiBase = normalizeBase(apiBase);
+        this.frontendBase = normalizeBase(process.env.PUBLIC_BASE_URL || 'http://localhost:5173');
     }
 
     private _createFlowSignature(params: Record<string, string | number>): string {
@@ -164,6 +166,8 @@ export class PaymentsService {
 
         // 6. LLAMADA A API MERCADO PAGO
         try {
+            // 🔥 back_urls apuntan DIRECTO al frontend (no al backend)
+            // MP agrega automáticamente: payment_id, status, external_reference, merchant_order_id
             const preferenceData = {
                 items: [
                     {
@@ -179,14 +183,13 @@ export class PaymentsService {
                     name: user.name || 'Cliente',
                     surname: user.lastname || ''
                 },
-                // 🔥 ENLAZAMOS EL PAGO LOCAL CON 'external_reference'
                 external_reference: payment.id,
                 back_urls: {
-                    success: `${this.apiBase}/payments/mercadopago/return?status=success`,
-                    failure: `${this.apiBase}/payments/mercadopago/return?status=failure`,
-                    pending: `${this.apiBase}/payments/mercadopago/return?status=pending`
+                    success: `${this.frontendBase}/checkout/success`,
+                    failure: `${this.frontendBase}/checkout/failure`,
+                    pending: `${this.frontendBase}/checkout/pending`,
                 },
-                auto_return: 'approved',
+                ...(this.frontendBase.startsWith('https') ? { auto_return: 'approved' } : {}),
                 notification_url: `${this.apiBase}/payments/mercadopago/webhook`,
                 statement_descriptor: "NIVEM RAFFLE"
             };
@@ -201,7 +204,7 @@ export class PaymentsService {
             // Guardamos el ID de la preferencia
             await this.prisma.payment.update({
                 where: { id: payment.id },
-                data: { flow_token: response.data.id } // Usamos flow_token para guardar el preference_id
+                data: { flow_token: response.data.id }
             });
 
             return {
@@ -212,7 +215,6 @@ export class PaymentsService {
 
         } catch (error: any) {
             this.logger.error(`❌ Error creando preferencia MP: ${error.message}`, error.response?.data);
-            // Marcamos la orden como fallida para no dejar basura
             await this.prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.failed } });
             throw new BadRequestException('Error al conectar con Mercado Pago');
         }
@@ -222,8 +224,6 @@ export class PaymentsService {
     // 2. WEBHOOK MERCADO PAGO
     // =================================================================
     async handleMpWebhook(query: any, body: any) {
-        // MP envía el ID en 'query.id' (viejos) o 'body.data.id' (nuevos)
-        // El middleware ya logueó todo, aquí procesamos.
         const topic = query.topic || body.type;
         const resourceId = query.id || body?.data?.id;
 
@@ -242,8 +242,8 @@ export class PaymentsService {
             );
 
             const paymentData = response.data;
-            const status = paymentData.status; // approved, rejected, pending
-            const externalRef = paymentData.external_reference; // NUESTRO payment.id
+            const status = paymentData.status;
+            const externalRef = paymentData.external_reference;
 
             if (!externalRef) {
                 this.logger.warn(`Pago MP ${resourceId} sin external_reference. Ignorando.`);
@@ -269,11 +269,8 @@ export class PaymentsService {
 
             // 4. Procesar según estado
             if (status === 'approved') {
-                // ✅ PAGO EXITOSO: Usamos la lógica centralizada
                 await this.processSuccessfulPayment(localPayment.id, resourceId.toString(), null);
-
             } else if (status === 'rejected' || status === 'cancelled') {
-                // ❌ PAGO RECHAZADO
                 await this.prisma.payment.update({
                     where: { id: localPayment.id },
                     data: { status: PaymentStatus.rejected }
@@ -289,9 +286,76 @@ export class PaymentsService {
 
         } catch (error: any) {
             this.logger.error(`❌ Error Webhook MP: ${error.message}`);
-            // Retornamos OK para evitar reintentos infinitos de MP en caso de error lógico nuestro
             return { ok: true };
         }
+    }
+
+    // =================================================================
+    // 2.5 VERIFICAR ESTADO MP (llamado desde frontend)
+    // =================================================================
+    async verifyMpPaymentStatus(externalReference: string, paymentIdMp?: string): Promise<{
+        status: 'paid' | 'pending' | 'failed';
+        orderId: string | null;
+    }> {
+        // 1. Buscar pago local
+        const localPayment = await this.prisma.payment.findUnique({
+            where: { id: externalReference },
+            select: { id: true, status: true, orderId: true },
+        });
+
+        if (!localPayment) {
+            return { status: 'failed', orderId: null };
+        }
+
+        // 2. Si el webhook ya lo procesó, devolver estado directo
+        if (localPayment.status === PaymentStatus.approved) {
+            return { status: 'paid', orderId: localPayment.orderId };
+        }
+        if (localPayment.status === PaymentStatus.rejected) {
+            return { status: 'failed', orderId: localPayment.orderId };
+        }
+
+        // 3. Webhook no ha llegado -> consultar MP directamente
+        if (paymentIdMp && this.mpAccessToken) {
+            try {
+                const response = await axios.get(
+                    `https://api.mercadopago.com/v1/payments/${paymentIdMp}`,
+                    {
+                        headers: { Authorization: `Bearer ${this.mpAccessToken}` },
+                        timeout: 10000,
+                    },
+                );
+
+                const realStatus = response.data.status;
+                this.logger.log(`🔍 Verify MP: payment ${paymentIdMp} -> ${realStatus}`);
+
+                if (realStatus === 'approved') {
+                    // Procesar aquí — idempotente si el webhook llega después
+                    await this.processSuccessfulPayment(
+                        localPayment.id,
+                        paymentIdMp.toString(),
+                        null,
+                    );
+                    return { status: 'paid', orderId: localPayment.orderId };
+                }
+
+                if (realStatus === 'rejected' || realStatus === 'cancelled') {
+                    await this.prisma.payment.update({
+                        where: { id: localPayment.id },
+                        data: { status: PaymentStatus.rejected },
+                    });
+                    await this.prisma.order.update({
+                        where: { id: localPayment.orderId },
+                        data: { status: OrderStatus.failed },
+                    });
+                    return { status: 'failed', orderId: localPayment.orderId };
+                }
+            } catch (error: any) {
+                this.logger.error(`❌ Error verify MP: ${error.message}`);
+            }
+        }
+
+        return { status: 'pending', orderId: localPayment.orderId };
     }
 
     // =================================================================
@@ -354,7 +418,7 @@ export class PaymentsService {
         });
 
         // 7. Flow API
-        const itemTitle = `Pack ${quantity} STickers: ${raffle.name}`;
+        const itemTitle = `Pack ${quantity} Stickers: ${raffle.name}`;
         const params: Record<string, string | number> = {
             apiKey: this.flowApiKey,
             commerceOrder: payment.id,
@@ -442,10 +506,8 @@ export class PaymentsService {
 
             // 3. Procesar
             if (flowStatus === 2) {
-                // ✅ PAGO EXITOSO
                 await this.processSuccessfulPayment(payment.id, token, flowOrder);
             } else if (flowStatus === 3 || flowStatus === 4) {
-                // ❌ PAGO RECHAZADO
                 await this.prisma.payment.update({
                     where: { id: payment.id },
                     data: { status: PaymentStatus.rejected, flow_token: token, flow_order_id: flowOrder },
@@ -460,14 +522,10 @@ export class PaymentsService {
 
         } catch (error: any) {
             this.logger.error(`❌ Error Webhook Flow: ${error.message}`);
-            // Lanzamos error controlado 400 (o retornamos OK si queremos silenciar)
             throw new BadRequestException('Error interno webhook Flow');
         }
     }
 
-    // =================================================================
-    // 5. PROCESAMIENTO CENTRALIZADO (NÚCLEO DEL SISTEMA)
-    // =================================================================
     // =================================================================
     // 5. PROCESAMIENTO BLINDADO (CORREGIDO)
     // =================================================================
@@ -480,7 +538,6 @@ export class PaymentsService {
                 // A. Verificación Atómica Anti-Duplicados
                 const currentPayment = await tx.payment.findUnique({ where: { id: paymentId } });
 
-                // Si ya está aprobado, abortamos para no dar doble ticket
                 if (!currentPayment || currentPayment.status === PaymentStatus.approved) {
                     this.logger.warn(`🛑 Pago ${paymentId} ya procesado. Omitiendo duplicado.`);
                     return;
@@ -500,8 +557,6 @@ export class PaymentsService {
                 let assignedNumbers: number[] = [];
 
                 if (entry && entry.raffleId && entry.entries > 0) {
-                    // Doble seguridad: verificar si la orden ya tiene tickets
-                    // 👇 AQUÍ ESTABA EL ERROR (ticket -> raffleTicket)
                     const existingCount = await tx.raffleTicket.count({ where: { orderId: payment.orderId } });
 
                     if (existingCount === 0) {
@@ -549,7 +604,9 @@ export class PaymentsService {
         }
     }
 
-    // --- Helper para Redirección Frontend ---
+    // =================================================================
+    // 6. HELPER FLOW - Redirección Frontend
+    // =================================================================
     async checkFlowStatusRealTime(token: string, orderId: string): Promise<'success' | 'failure' | 'pending'> {
         const order = await this.prisma.order.findUnique({ where: { id: orderId } });
         if (order?.status === OrderStatus.paid) return 'success';
