@@ -105,8 +105,7 @@ export class MailService {
     billing: {
       name: string;
       rut: string;
-      address: string;
-      city: string;
+      email: string;
       phone: string;
     }
   }) {
@@ -186,16 +185,8 @@ export class MailService {
                     <td style="padding: 6px 0; font-weight: bold; color: ${this.COLORS.textPrimary};">${orderData.billing.name}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px 0; color: ${this.COLORS.textMuted}; font-size: 12px; text-transform: uppercase;">RUT:</td>
-                    <td style="padding: 6px 0; font-weight: bold; color: ${this.COLORS.textPrimary};">${orderData.billing.rut}</td>
-                </tr>
-                <tr>
-                    <td style="padding: 6px 0; color: ${this.COLORS.textMuted}; font-size: 12px; text-transform: uppercase;">Dirección:</td>
-                    <td style="padding: 6px 0; color: ${this.COLORS.textPrimary};">${orderData.billing.address}</td>
-                </tr>
-                <tr>
-                    <td style="padding: 6px 0; color: ${this.COLORS.textMuted}; font-size: 12px; text-transform: uppercase;">Ciudad:</td>
-                    <td style="padding: 6px 0; color: ${this.COLORS.textPrimary};">${orderData.billing.city}</td>
+                    <td style="padding: 6px 0; color: ${this.COLORS.textMuted}; width: 120px; font-size: 12px; text-transform: uppercase;">Email:</td>
+                    <td style="padding: 6px 0; font-weight: bold; color: ${this.COLORS.textPrimary};">${orderData.billing.email}</td>
                 </tr>
                 <tr>
                     <td style="padding: 6px 0; color: ${this.COLORS.textMuted}; font-size: 12px; text-transform: uppercase;">Teléfono:</td>
