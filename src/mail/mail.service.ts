@@ -103,7 +103,7 @@ export class MailService {
     const hasStickers = orderData.tickets.length > 0;
 
     // URL estática de ejemplo (si tienes una variable para esto, mejor úsala)
-    const ticketIconUrl = "https://nivem-ecommerce-assets-611773454107.s3.us-east-2.amazonaws.com/raffles/1+sticker.png";
+    const ticketIconUrl = "https://cretop-photos.s3.us-east-2.amazonaws.com/CretoTV+(2).png";
 
     const html = this.getCyberpunkTemplate(
       '¡Misión Confirmada!',
