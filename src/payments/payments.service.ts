@@ -118,7 +118,7 @@ export class PaymentsService {
         if (!user) throw new NotFoundException('Usuario no encontrado');
 
         // 🔥 CORRECCIÓN CRÍTICA: Mercado Pago a veces falla con emails en mayúsculas
-        const payerEmail = user.email ? user.email.toLowerCase().trim() : 'guest@nivem.cl';
+        const payerEmail = user.email ? user.email.toLowerCase().trim() : 'guest@creto.cl';
 
         // 2. Calcular Precios
         const pricing = this.raffles.computeBestPricing(raffle.ticket_price_clp, quantity, raffle.pricingTiers);
