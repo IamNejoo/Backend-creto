@@ -191,7 +191,7 @@ export class PaymentsService {
                 },
                 ...(this.frontendBase.startsWith('https') ? { auto_return: 'approved' } : {}),
                 notification_url: `${this.apiBase}/payments/mercadopago/webhook`,
-                statement_descriptor: "NIVEM RAFFLE"
+                statement_descriptor: "CRETO RAFFLE"
             };
 
             this.logger.log(`📡 Enviando preferencia a Mercado Pago...`);
