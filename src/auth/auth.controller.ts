@@ -12,10 +12,11 @@ import {
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { GoogleLoginDto } from './dto/google-login.dto'; // <--- IMPORTANTE: DTO NUEVO
+import { GoogleLoginDto } from './dto/google-login.dto';
 import { JwtAuthGuard } from './guard/jwt-auth.guard';
 import { GetUser } from './decorator/get-user.decorator';
 import { IsEmail, IsString, MinLength } from 'class-validator';
+import { ThrottlerGuard, Throttle } from '@nestjs/throttler'; // <-- NUEVO PARA RATE LIMIT
 
 // DTOs locales
 class RequestResetDto {
@@ -53,7 +54,7 @@ export class AuthController {
     constructor(private readonly authService: AuthService) { }
 
     /**
-     * LOGIN CON GOOGLE (NUEVO)
+     * LOGIN CON GOOGLE
      * POST /auth/google
      */
     @Post('google')
@@ -63,9 +64,12 @@ export class AuthController {
     }
 
     /**
-     * REGISTRO
+     * REGISTRO (CON RATE LIMIT)
      * POST /auth/register
+     * Permite máximo 3 intentos cada 60 segundos por IP
      */
+    @UseGuards(ThrottlerGuard)
+    @Throttle({ default: { limit: 3, ttl: 60000 } }) // <-- LIMITAMOS POR IP
     @Post('register')
     @HttpCode(HttpStatus.CREATED)
     async register(@Body() dto: RegisterDto) {

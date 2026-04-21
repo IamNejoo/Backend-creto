@@ -24,4 +24,9 @@ export class RegisterDto {
     @IsOptional()
     @IsUrl({ require_tld: false })
     avatarUrl?: string;
+
+    // MAGIA ANTI-BOTS: Token de reCAPTCHA
+    @IsOptional()
+    @IsString()
+    recaptchaToken?: string;
 }

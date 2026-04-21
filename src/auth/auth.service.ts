@@ -12,11 +12,11 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
-import { OAuth2Client } from 'google-auth-library'; // <--- IMPORTANTE
+import { OAuth2Client } from 'google-auth-library';
 import { MailService } from '../mail/mail.service';
+
 @Injectable()
 export class AuthService {
-    // Inicializar cliente de Google con la variable de entorno
     private googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
     constructor(
@@ -26,11 +26,8 @@ export class AuthService {
     ) { }
 
     /* ------------------------------------------------------------------
-     * GOOGLE LOGIN (NUEVO)
+     * GOOGLE LOGIN
      * ------------------------------------------------------------------ */
-    /* ------------------------------------------------------------------
-         * GOOGLE LOGIN (CORREGIDO)
-         * ------------------------------------------------------------------ */
     async googleLogin(token: string) {
         try {
             const ticket = await this.googleClient.verifyIdToken({
@@ -40,12 +37,10 @@ export class AuthService {
 
             const payload = ticket.getPayload();
 
-            // CORRECCIÓN: Validar que el payload exista antes de usarlo
             if (!payload) {
                 throw new UnauthorizedException('Token de Google inválido: sin payload');
             }
 
-            // Ahora TypeScript sabe que payload no es undefined
             const { email, name, picture, sub, given_name, family_name } = payload;
 
             if (!email) {
@@ -64,12 +59,11 @@ export class AuthService {
                         lastname: family_name || '',
                         avatarUrl: picture,
                         googleId: sub,
-                        hash: null, // Si hiciste el paso 1, esto ya no dará error
+                        hash: null,
                         role: 'user',
                     },
                 });
             } else {
-                // Si hiciste el paso 1, esto ya no dará error
                 if (!user.googleId) {
                     user = await this.prisma.user.update({
                         where: { id: user.id },
@@ -90,8 +84,6 @@ export class AuthService {
                     email: user.email,
                     phone: user.phone,
                     role: user.role,
-                    // Usamos as any temporalmente si los tipos de User siguen molestando, 
-                    // pero con npx prisma generate debería bastar.
                     name: user.name,
                     lastname: user.lastname,
                     avatarUrl: user.avatarUrl,
@@ -105,12 +97,54 @@ export class AuthService {
             throw new UnauthorizedException('Token de Google inválido o expirado');
         }
     }
+
     /* ------------------------------------------------------------------
-     * REGISTER
+     * REGISTER (AQUÍ ESTÁ LA MAGIA ANTI-BOTS)
      * ------------------------------------------------------------------ */
     async register(dto: RegisterDto) {
-        const { email, password, phone, name, lastname, avatarUrl } = dto as any;
+        // Asumo que agregaste recaptchaToken a tu RegisterDto
+        const { email, password, phone, name, lastname, avatarUrl, recaptchaToken } = dto as any;
 
+        // 1. FILTRO ANTI-BASURA (Patrones Regex)
+        // Bloquea "test", "test1", "test43", etc. ignorando mayúsculas/minúsculas.
+        const spamPattern = /^test\d*$/i; 
+        const emailPrefix = email.split('@')[0];
+
+        if (
+            spamPattern.test(name) || 
+            spamPattern.test(lastname) || 
+            spamPattern.test(emailPrefix)
+        ) {
+            throw new BadRequestException('Se ha detectado un registro inválido. Verifica tus datos.');
+        }
+
+        // 2. VALIDACIÓN DE RECAPTCHA EN EL BACKEND
+        if (!recaptchaToken) {
+            throw new BadRequestException('El token de seguridad (CAPTCHA) es requerido.');
+        }
+
+        const secretKey = process.env.RECAPTCHA_SECRET_KEY;
+        const verifyUrl = 'https://www.google.com/recaptcha/api/siteverify';
+        
+        try {
+            // Nota: Usa fetch nativo (Node 18+). Si usas una versión antigua, cambia por axios.
+            const captchaResponse = await fetch(verifyUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `secret=${secretKey}&response=${recaptchaToken}`
+            });
+            const captchaData = await captchaResponse.json();
+
+            if (!captchaData.success) {
+                console.error('Fallo de CAPTCHA:', captchaData['error-codes']);
+                throw new BadRequestException('Validación de seguridad fallida. Eres un bot?');
+            }
+        } catch (error) {
+            if (error instanceof BadRequestException) throw error;
+            throw new BadRequestException('No se pudo validar el CAPTCHA con Google.');
+        }
+
+        // 3. FLUJO NORMAL DE REGISTRO
         const existing = await this.prisma.user.findUnique({ where: { email } });
         if (existing) throw new ConflictException('El usuario ya existe');
 
@@ -170,7 +204,7 @@ export class AuthService {
     }
 
     /* ------------------------------------------------------------------
-     * PROFILE VALIDATION (JWT strategy)
+     * PROFILE VALIDATION
      * ------------------------------------------------------------------ */
     async validateUser(userId: string) {
         const user = await this.prisma.user.findUnique({
@@ -190,7 +224,7 @@ export class AuthService {
     }
 
     /* ------------------------------------------------------------------
-     * PASSWORD: CHANGE (autenticado)
+     * PASSWORD: CHANGE
      * ------------------------------------------------------------------ */
     async changePassword(userId: string, oldPassword: string, newPassword: string) {
         const user = await this.prisma.user.findUnique({ where: { id: userId } });
@@ -218,7 +252,7 @@ export class AuthService {
     }
 
     /* ------------------------------------------------------------------
-     * PASSWORD: REQUEST RESET (público)
+     * PASSWORD: REQUEST RESET
      * ------------------------------------------------------------------ */
     async requestPasswordReset(email: string) {
         const user = await this.prisma.user.findUnique({ where: { email } });
@@ -257,7 +291,7 @@ export class AuthService {
     }
 
     /* ------------------------------------------------------------------
-     * PASSWORD: RESET (público con token)
+     * PASSWORD: RESET
      * ------------------------------------------------------------------ */
     async resetPassword(rawToken: string, newPassword: string) {
         if (!rawToken || !newPassword) {
