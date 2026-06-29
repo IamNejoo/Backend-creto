@@ -3,6 +3,7 @@ import {
     BadRequestException,
     Logger,
     NotFoundException,
+    ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { RaffleService } from '../raffle/raffle.service';
@@ -221,6 +222,96 @@ export class PaymentsService {
     }
 
     // =================================================================
+    // 1.B CHECKOUT MERCADO PAGO PARA ORDEN DE PRODUCTOS (Carrito)
+    // =================================================================
+    async createMpOrderCheckout(userId: string, orderId: string) {
+        this.logger.log(`🛒 Checkout MP Orden Iniciado (User: ${userId}, Order: ${orderId})`);
+
+        // 1. Validar Orden
+        const order = await this.prisma.order.findUnique({
+            where: { id: orderId },
+            include: { items: true },
+        });
+        if (!order) throw new NotFoundException('Orden no encontrada');
+        if (order.userId !== userId) throw new ForbiddenException('No tienes acceso a esta orden');
+        if (order.status !== OrderStatus.draft && order.status !== OrderStatus.pending) {
+            throw new BadRequestException('La orden no está disponible para pago');
+        }
+        if (!order.items || order.items.length === 0) {
+            throw new BadRequestException('La orden no tiene productos');
+        }
+
+        const safeTotal = Math.max(0, order.total_clp);
+        if (safeTotal === 0) throw new BadRequestException('El monto total no puede ser 0 para Mercado Pago.');
+
+        // 2. Usuario / Payer
+        const user = await this.prisma.user.findUnique({ where: { id: userId } });
+        if (!user) throw new NotFoundException('Usuario no encontrado');
+        const payerEmail = user.email ? user.email.toLowerCase().trim() : 'guest@creto.cl';
+
+        // 3. Pasar la orden a pending y crear Pago Local (Estado INIT)
+        await this.prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.pending } });
+
+        const payment = await this.prisma.payment.create({
+            data: { orderId: order.id, provider: 'mercadopago', status: PaymentStatus.init, amount_clp: safeTotal },
+        });
+
+        // 4. LLAMADA A API MERCADO PAGO
+        try {
+            // Un solo ítem con el total de la orden (incluye IVA) para garantizar
+            // que el monto cobrado coincida exactamente con order.total_clp.
+            const preferenceData = {
+                items: [
+                    {
+                        id: order.id,
+                        title: `Compra Creto - Orden ${order.number}`,
+                        quantity: 1,
+                        currency_id: 'CLP',
+                        unit_price: safeTotal,
+                    },
+                ],
+                payer: {
+                    email: payerEmail,
+                    name: user.name || 'Cliente',
+                    surname: user.lastname || '',
+                },
+                external_reference: payment.id,
+                back_urls: {
+                    success: `${this.frontendBase}/checkout/success`,
+                    failure: `${this.frontendBase}/checkout/failure`,
+                    pending: `${this.frontendBase}/checkout/pending`,
+                },
+                ...(this.frontendBase.startsWith('https') ? { auto_return: 'approved' } : {}),
+                notification_url: `${this.apiBase}/payments/mercadopago/webhook`,
+                statement_descriptor: 'CRETO SHOP',
+            };
+
+            this.logger.log(`📡 Enviando preferencia de orden a Mercado Pago...`);
+            const response = await axios.post(
+                'https://api.mercadopago.com/checkout/preferences',
+                preferenceData,
+                { headers: { Authorization: `Bearer ${this.mpAccessToken}` } },
+            );
+
+            // Guardamos el ID de la preferencia
+            await this.prisma.payment.update({
+                where: { id: payment.id },
+                data: { flow_token: response.data.id },
+            });
+
+            return {
+                preference_id: response.data.id,
+                init_point: response.data.init_point,
+                order_id: order.id,
+            };
+        } catch (error: any) {
+            this.logger.error(`❌ Error creando preferencia MP (orden): ${error.message}`, error.response?.data);
+            await this.prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.failed } });
+            throw new BadRequestException('Error al conectar con Mercado Pago');
+        }
+    }
+
+    // =================================================================
     // 2. WEBHOOK MERCADO PAGO
     // =================================================================
     async handleMpWebhook(query: any, body: any) {
@@ -293,17 +384,23 @@ export class PaymentsService {
     // =================================================================
     // 2.5 VERIFICAR ESTADO MP (llamado desde frontend)
     // =================================================================
-    async verifyMpPaymentStatus(externalReference: string, paymentIdMp?: string): Promise<{
+    async verifyMpPaymentStatus(externalReference: string, paymentIdMp?: string, userId?: string): Promise<{
         status: 'paid' | 'pending' | 'failed';
         orderId: string | null;
     }> {
         // 1. Buscar pago local
         const localPayment = await this.prisma.payment.findUnique({
             where: { id: externalReference },
-            select: { id: true, status: true, orderId: true },
+            select: { id: true, status: true, orderId: true, amount_clp: true, order: { select: { userId: true } } },
         });
 
         if (!localPayment) {
+            return { status: 'failed', orderId: null };
+        }
+
+        // 🔒 Propiedad: el pago debe pertenecer al usuario que consulta (anti-IDOR)
+        if (userId && localPayment.order?.userId && localPayment.order.userId !== userId) {
+            this.logger.warn(`🚫 Verify: usuario ${userId} intentó consultar pago de otro (${externalReference}).`);
             return { status: 'failed', orderId: null };
         }
 
@@ -326,11 +423,24 @@ export class PaymentsService {
                     },
                 );
 
-                const realStatus = response.data.status;
+                const mp = response.data;
+                const realStatus = mp.status;
                 this.logger.log(`🔍 Verify MP: payment ${paymentIdMp} -> ${realStatus}`);
 
+                // 🔒 El pago de MP DEBE corresponder a este external_reference
+                if (mp.external_reference !== externalReference) {
+                    this.logger.error(`❌ Verify: external_reference no coincide (MP:${mp.external_reference} vs ${externalReference}).`);
+                    return { status: 'failed', orderId: null };
+                }
+
+                // 🔒 El monto cobrado debe coincidir con el monto local
+                if (localPayment.amount_clp && mp.transaction_amount != null &&
+                    Math.round(Number(mp.transaction_amount)) !== localPayment.amount_clp) {
+                    this.logger.error(`❌ Verify: monto no coincide (MP:${mp.transaction_amount} vs ${localPayment.amount_clp}).`);
+                    return { status: 'failed', orderId: null };
+                }
+
                 if (realStatus === 'approved') {
-                    // Procesar aquí — idempotente si el webhook llega después
                     await this.processSuccessfulPayment(
                         localPayment.id,
                         paymentIdMp.toString(),
@@ -575,8 +685,44 @@ export class PaymentsService {
                     include: { user: { include: { addresses: true } } }
                 });
 
-                // E. Datos Email
-                if (updatedOrder.user?.email) {
+                // D.2 Consumo de Stock para Órdenes de Productos (carrito, no sorteo)
+                // El stock NO se reserva al crear la orden, por lo que aquí
+                // descontamos directamente de 'stock' (solo al aprobarse el pago).
+                if (!entry) {
+                    const orderWithItems = await tx.order.findUnique({
+                        where: { id: payment.orderId },
+                        include: { items: { include: { variant: { include: { levels: true } } } } },
+                    });
+
+                    for (const item of orderWithItems?.items ?? []) {
+                        if (!item.variant) continue;
+                        let remaining = item.qty;
+
+                        for (const level of item.variant.levels) {
+                            if (remaining <= 0) break;
+
+                            const toConsume = Math.min(level.stock, remaining);
+                            if (toConsume > 0) {
+                                await tx.inventoryLevel.update({
+                                    where: { id: level.id },
+                                    data: {
+                                        stock: { decrement: toConsume },
+                                    },
+                                });
+                                remaining -= toConsume;
+                            }
+                        }
+
+                        if (remaining > 0) {
+                            this.logger.warn(`⚠️ Stock insuficiente al cobrar la variante ${item.variantId} (faltaron ${remaining}).`);
+                        }
+                    }
+
+                    this.logger.log(`📦 Stock descontado para orden de productos ${payment.orderId}`);
+                }
+
+                // E. Datos Email (solo sorteos; las compras de productos no envían email)
+                if (entry && updatedOrder.user?.email) {
                     userEmail = updatedOrder.user.email;
                     const user = updatedOrder.user;
                     const raffleDateString = entry?.raffle?.ends_at ? formatDate(entry.raffle.ends_at) : 'Pronto';

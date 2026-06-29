@@ -50,14 +50,15 @@ export class PaymentsController {
     }
 
     // --- VERIFICAR ESTADO PAGO MP (llamado desde frontend) ---
+    @UseGuards(JwtAuthGuard)
     @Get('mercadopago/verify')
-    async verifyMpPayment(@Query() query: any) {
+    async verifyMpPayment(@GetUser('id') userId: string, @Query() query: any) {
         const externalRef = query.external_reference;
         const paymentIdMp = query.payment_id;
         if (!externalRef) {
             return { status: 'failed', orderId: null };
         }
-        return this.payments.verifyMpPaymentStatus(externalRef, paymentIdMp);
+        return this.payments.verifyMpPaymentStatus(externalRef, paymentIdMp, userId);
     }
 
     // --- REDIRECCIONES FLOW ---

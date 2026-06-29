@@ -19,32 +19,52 @@ export class OrdersService {
             throw new BadRequestException('La orden debe tener al menos un producto');
         }
 
-        const variantIds = dto.items.map(item => item.variantId);
-        const variants = await this.prisma.variant.findMany({
-            where: {
-                id: { in: variantIds },
-                active: true,
-            },
-            include: {
-                product: {
-                    include: {
-                        images: true,
-                    },
-                },
-                levels: {
-                    include: {
-                        source: true,
-                    },
-                },
-            },
-        });
+        // Validar que cada ítem tenga variantId o productId
+        for (const item of dto.items) {
+            if (!item.variantId && !item.productId) {
+                throw new BadRequestException('Cada ítem requiere variantId (físico) o productId (digital)');
+            }
+        }
 
-        if (variants.length !== variantIds.length) {
+        const variantIds = dto.items.filter(i => i.variantId).map(i => i.variantId!);
+        const digitalProductIds = [...new Set(dto.items.filter(i => !i.variantId && i.productId).map(i => i.productId!))];
+
+        // Físicos: resolver variantes
+        const variants = variantIds.length
+            ? await this.prisma.variant.findMany({
+                where: { id: { in: variantIds }, active: true },
+                include: {
+                    product: {
+                        include: {
+                            images: true,
+                        },
+                    },
+                    levels: {
+                        include: {
+                            source: true,
+                        },
+                    },
+                },
+            })
+            : [];
+        if (variants.length !== new Set(variantIds).size) {
             throw new BadRequestException('Algunas variantes no existen o están inactivas');
         }
 
-        // Validar stock para productos físicos
+        // Digitales: resolver productos
+        const digitalProducts = digitalProductIds.length
+            ? await this.prisma.product.findMany({
+                where: { id: { in: digitalProductIds }, type: 'digital', active: true },
+                include: { images: true },
+            })
+            : [];
+        if (digitalProducts.length !== digitalProductIds.length) {
+            throw new BadRequestException('Algunos productos digitales no existen o están inactivos');
+        }
+
+        // Validar stock (solo físicos)
         for (const item of dto.items) {
+            if (!item.variantId) continue;
             const variant = variants.find(v => v.id === item.variantId);
             if (!variant) continue;
 
@@ -67,22 +87,41 @@ export class OrdersService {
         const orderItems: any[] = [];
 
         for (const item of dto.items) {
-            const variant = variants.find(v => v.id === item.variantId);
-            if (!variant) continue;
+            if (item.variantId) {
+                const variant = variants.find(v => v.id === item.variantId);
+                if (!variant) continue;
 
-            const unitPrice = variant.product.price_clp + variant.extra_price;
-            const totalPrice = unitPrice * item.qty;
-            subtotal += totalPrice;
+                const unitPrice = variant.product.price_clp + variant.extra_price;
+                const totalPrice = unitPrice * item.qty;
+                subtotal += totalPrice;
 
-            orderItems.push({
-                productId: variant.product.id,
-                variantId: variant.id,
-                title_snap: variant.product.title,
-                sku_snap: variant.sku,
-                qty: item.qty,
-                unit_price_clp: unitPrice,
-                total_clp: totalPrice,
-            });
+                orderItems.push({
+                    productId: variant.product.id,
+                    variantId: variant.id,
+                    title_snap: variant.product.title,
+                    sku_snap: variant.sku,
+                    qty: item.qty,
+                    unit_price_clp: unitPrice,
+                    total_clp: totalPrice,
+                });
+            } else {
+                const product = digitalProducts.find(p => p.id === item.productId);
+                if (!product) continue;
+
+                const unitPrice = product.price_clp;
+                const totalPrice = unitPrice * item.qty;
+                subtotal += totalPrice;
+
+                orderItems.push({
+                    productId: product.id,
+                    variantId: null,
+                    title_snap: product.title,
+                    sku_snap: null,
+                    qty: item.qty,
+                    unit_price_clp: unitPrice,
+                    total_clp: totalPrice,
+                });
+            }
         }
 
         // Aplicar cupón si existe
@@ -123,11 +162,12 @@ export class OrdersService {
             couponId = coupon.id;
         }
 
-        // Calcular IVA (19%)
+        // Calcular IVA (incluido en el precio)
         const taxRate = 0.19;
-        const taxAmount = Math.round((subtotal - discountAmount) * taxRate);
+        const base = subtotal - discountAmount;
+        const taxAmount = Math.round(base * taxRate / (1 + taxRate));
         const shippingCost = 0;
-        const total = subtotal - discountAmount + taxAmount + shippingCost;
+        const total = base + shippingCost;
         const orderNumber = await this.generateOrderNumber();
 
         // Crear orden en transacción
@@ -186,28 +226,9 @@ export class OrdersService {
                 });
             }
 
-            // Reservar stock para productos físicos
-            for (const item of dto.items) {
-                const variant = variants.find(v => v.id === item.variantId);
-                if (variant?.product.type === 'physical') {
-                    let remaining = item.qty;
-
-                    for (const level of variant.levels) {
-                        if (remaining <= 0) break;
-
-                        const available = level.stock - level.reserved;
-                        const toReserve = Math.min(available, remaining);
-
-                        if (toReserve > 0) {
-                            await tx.inventoryLevel.update({
-                                where: { id: level.id },
-                                data: { reserved: { increment: toReserve } },
-                            });
-                            remaining -= toReserve;
-                        }
-                    }
-                }
-            }
+            // El stock NO se reserva al crear la orden. Solo se descuenta cuando
+            // el pago se aprueba (ver PaymentsService.processSuccessfulPayment),
+            // para que un checkout abandonado no afecte la disponibilidad.
 
             // Copiar dirección si existe
             if (dto.addressId) {
@@ -346,22 +367,11 @@ export class OrdersService {
             throw new BadRequestException('Solo se pueden cancelar órdenes en estado draft o pending');
         }
 
-        await this.prisma.$transaction(async (tx) => {
-            for (const item of order.items) {
-                if (item.variant) {
-                    for (const level of item.variant.levels) {
-                        await tx.inventoryLevel.update({
-                            where: { id: level.id },
-                            data: { reserved: { decrement: Math.min(level.reserved, item.qty) } },
-                        });
-                    }
-                }
-            }
-
-            await tx.order.update({
-                where: { id: orderId },
-                data: { status: OrderStatus.cancelled },
-            });
+        // El stock no se reserva al crear la orden, por lo que cancelar no
+        // requiere liberar inventario; solo se marca como cancelada.
+        await this.prisma.order.update({
+            where: { id: orderId },
+            data: { status: OrderStatus.cancelled },
         });
 
         const updatedOrder = await this.findById(orderId, userId);
@@ -395,13 +405,12 @@ export class OrdersService {
                         for (const level of item.variant.levels) {
                             if (remaining <= 0) break;
 
-                            const toConsume = Math.min(level.reserved, remaining);
+                            const toConsume = Math.min(level.stock, remaining);
 
                             if (toConsume > 0) {
                                 await tx.inventoryLevel.update({
                                     where: { id: level.id },
                                     data: {
-                                        reserved: { decrement: toConsume },
                                         stock: { decrement: toConsume },
                                     },
                                 });

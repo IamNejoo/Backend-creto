@@ -5,20 +5,20 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { PrismaModule } from '../prisma/prisma.module';
 import { JwtStrategy } from './strategy/jwt.strategy';
-import { ThrottlerModule } from '@nestjs/throttler'; // <-- NUEVO
+import { ThrottlerModule } from '@nestjs/throttler';
+import { getJwtSecret } from '../config/jwt-secret';
 
 @Module({
   imports: [
     PrismaModule,
     PassportModule,
-    // Configuración base para el Rate Limit en memoria
     ThrottlerModule.forRoot([{
         ttl: 60000,
-        limit: 10, // Un limite general alto por si acaso
+        limit: 10,
     }]),
     JwtModule.register({
       global: true,
-      secret: process.env.JWT_SECRET || 'mi-super-secreto-jwt-2000',
+      secret: getJwtSecret(),
       signOptions: { expiresIn: '7d' },
     }),
   ],

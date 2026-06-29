@@ -14,6 +14,7 @@ import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
 import { MailService } from '../mail/mail.service';
+import { getJwtSecret } from '../config/jwt-secret';
 
 @Injectable()
 export class AuthService {
@@ -349,14 +350,9 @@ export class AuthService {
     private async signToken(userId: string, email: string): Promise<string> {
         const payload = { sub: userId, email };
 
-        const secret = process.env.JWT_SECRET;
-        if (!secret && process.env.NODE_ENV === 'production') {
-            console.error("CRITICAL: JWT_SECRET is not set in production environment!");
-        }
-
         return this.jwt.signAsync(payload, {
             expiresIn: '7d',
-            secret: secret || 'mi-super-secreto-jwt-2000',
+            secret: getJwtSecret(),
         });
     }
 }

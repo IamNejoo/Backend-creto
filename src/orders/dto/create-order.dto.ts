@@ -1,11 +1,15 @@
 // backend/src/orders/dto/create-order.dto.ts
-import { IsArray, IsNotEmpty, IsOptional, IsString, IsInt, Min, ValidateNested } from 'class-validator';
+import { IsArray, IsOptional, IsString, IsInt, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class OrderItemDto {
     @IsString()
-    @IsNotEmpty()
-    variantId: string;
+    @IsOptional()
+    variantId?: string;
+
+    @IsString()
+    @IsOptional()
+    productId?: string;
 
     @IsInt()
     @Min(1)

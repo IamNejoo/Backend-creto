@@ -57,6 +57,11 @@ export class OrdersController {
         return this.ordersService.cancel(orderId, userId);
     }
 
+    @Post(':id/checkout')
+    async checkout(@GetUser('id') userId: string, @Param('id') orderId: string) {
+        return this.paymentsService.createMpOrderCheckout(userId, orderId);
+    }
+
     @Get('admin/all')
     @UseGuards(AdminGuard)
     async getAllOrders(
