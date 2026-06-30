@@ -230,8 +230,32 @@ export class OrdersService {
             // el pago se aprueba (ver PaymentsService.processSuccessfulPayment),
             // para que un checkout abandonado no afecte la disponibilidad.
 
-            // Copiar dirección si existe
-            if (dto.addressId) {
+            // Guardar la dirección de envío en la orden (snapshot).
+            // Prioridad: dirección enviada en el checkout (dto.shipping);
+            // si no, se copia desde la libreta del usuario (dto.addressId).
+            let shippingData: {
+                name: string;
+                line1: string;
+                line2: string | null;
+                city: string;
+                region: string;
+                country: string;
+                zip: string | null;
+                phone: string | null;
+            } | null = null;
+
+            if (dto.shipping) {
+                shippingData = {
+                    name: dto.shipping.name,
+                    line1: dto.shipping.line1,
+                    line2: dto.shipping.line2 ?? null,
+                    city: dto.shipping.city,
+                    region: dto.shipping.region,
+                    country: dto.shipping.country || 'CL',
+                    zip: dto.shipping.zip ?? null,
+                    phone: dto.shipping.phone ?? null,
+                };
+            } else if (dto.addressId) {
                 const address = await tx.address.findFirst({
                     where: {
                         id: dto.addressId,
@@ -240,20 +264,49 @@ export class OrdersService {
                 });
 
                 if (address) {
-                    await tx.orderAddress.create({
-                        data: {
-                            orderId: newOrder.id,
-                            type: 'shipping',
-                            name: address.name || '',
-                            line1: address.line1,
-                            line2: address.line2,
-                            city: address.city,
-                            region: address.region,
-                            country: address.country,
-                            zip: address.zip,
-                            phone: address.phone,
-                        },
-                    });
+                    shippingData = {
+                        name: address.name || '',
+                        line1: address.line1,
+                        line2: address.line2,
+                        city: address.city,
+                        region: address.region,
+                        country: address.country,
+                        zip: address.zip,
+                        phone: address.phone,
+                    };
+                }
+            }
+
+            if (shippingData) {
+                await tx.orderAddress.create({
+                    data: {
+                        orderId: newOrder.id,
+                        type: 'shipping',
+                        ...shippingData,
+                    },
+                });
+
+                // Guardar también en la libreta del usuario para prellenar la
+                // próxima compra. Solo si la dirección vino del checkout y el
+                // usuario aún no tiene direcciones guardadas.
+                if (dto.shipping) {
+                    const existingCount = await tx.address.count({ where: { userId } });
+                    if (existingCount === 0) {
+                        await tx.address.create({
+                            data: {
+                                userId,
+                                name: shippingData.name,
+                                line1: shippingData.line1,
+                                line2: shippingData.line2,
+                                city: shippingData.city,
+                                region: shippingData.region,
+                                country: shippingData.country,
+                                zip: shippingData.zip,
+                                phone: shippingData.phone,
+                                isDefaultShipping: true,
+                            },
+                        });
+                    }
                 }
             }
 
